@@ -1,0 +1,15 @@
+[tool.poetry]
+name = "knowledge-content-graph"
+version = "0.1.0"
+description = "Capture vectors and links between content."
+authors = ["Ben Chambers <35960+bjchambers@users.noreply.github.com>"]
+readme = "README.md"
+packages = [{include = "knowledge_content_graph"}]
+
+[tool.poetry.dependencies]
+python = "^3.11"
+
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
