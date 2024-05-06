@@ -1,6 +1,6 @@
 from enum import Enum
-from typing import Optional
-from langchain_core.pydantic_v1 import BaseModel
+from typing import Optional, Set
+from langchain_core.pydantic_v1 import BaseModel, Field
 
 
 class Kind(str, Enum):
@@ -32,4 +32,5 @@ class Content(BaseModel):
     content_id: str
     parent_id: Optional[str] = None
     kind: Kind
+    urls: Set[str] = Field(default_factory = set)
     text_content: Optional[str] = None

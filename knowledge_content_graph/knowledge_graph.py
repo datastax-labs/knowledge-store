@@ -1,6 +1,6 @@
-from typing import Iterable, Optional, Sequence, Union
+from typing import Iterable, List, Optional, Sequence, Union
 
-from cassandra.cluster import Session
+from cassandra.cluster import Session, ResponseFuture
 from cassandra.query import BatchStatement
 from cassio.config import check_resolve_keyspace, check_resolve_session
 
@@ -9,6 +9,18 @@ from langchain_core.embeddings import Embeddings
 from knowledge_content_graph.content import Content
 from knowledge_content_graph._utils import batched
 
+def _results_to_content(results: ResponseFuture) -> List[Content]:
+    return [
+        Content(
+            document_id=c.document_id,
+            content_id=c.content_id,
+            parent_id=c.parent_id,
+            kind=c.kind,
+            urls=set(c.urls) if c.urls else set(),
+            text_content=c.text_content,
+        )
+        for c in results
+    ]
 
 class ContentGraph:
     def __init__(
@@ -46,17 +58,33 @@ class ContentGraph:
         self._insert_content = self._session.prepare(
             f"""
             INSERT INTO {keyspace}.{content_table} (
-                document_id, content_id, parent_id, kind, text_content, text_embedding
-            ) VALUES (?, ?, ?, ?, ?, ?)
+                document_id, content_id, parent_id, kind, urls, text_content, text_embedding
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
             """
         )
 
         self._query_text_embedding = self._session.prepare(
             f"""
-            SELECT document_id, content_id, parent_id, kind, text_content
+            SELECT document_id, content_id, parent_id, kind, urls, text_content
             FROM {keyspace}.{content_table}
             ORDER BY text_embedding ANN OF ?
             LIMIT ?
+            """
+        )
+
+        self._query_by_url = self._session.prepare(
+            f"""
+            SELECT document_id, content_id, parent_id, kind, urls, text_content
+            FROM {keyspace}.{content_table}
+            WHERE urls CONTAINS ?
+            """
+        )
+
+        self._query_by_parent_id = self._session.prepare(
+            f"""
+            SELECT document_id, content_id, parent_id, kind, urls, text_content
+            FROM {keyspace}.{content_table}
+            WHERE parent_id = ?
             """
         )
 
@@ -75,6 +103,9 @@ class ContentGraph:
                 parent_id TEXT,
                 -- The content kind. This should be one of the supported / known kinds.
                 kind TEXT,
+                -- One or more URLs associated with the content. This allows providing
+                -- multiple URLs for documents that may have multiple locations.
+                urls set<text>,
                 -- If the content kind is a text passage or otherwise contains text, this
                 -- is the corresponding text content.
                 text_content TEXT,
@@ -87,6 +118,7 @@ class ContentGraph:
             """
         )
 
+        # Index on text_embedding (for similarity)
         self._session.execute(
             f"""
             CREATE CUSTOM INDEX IF NOT EXISTS {self._content_table}_text_embedding_index
@@ -95,10 +127,29 @@ class ContentGraph:
             """
         )
 
+        # Index on content_id.
         self._session.execute(
             f"""
             CREATE CUSTOM INDEX IF NOT EXISTS {self._content_table}_content_id_index
             ON {self._keyspace}.{self._content_table} (content_id)
+            USING 'sai';
+            """
+        )
+
+        # Index on url
+        self._session.execute(
+            f"""
+            CREATE CUSTOM INDEX IF NOT EXISTS {self._content_table}_url_index
+            ON {self._keyspace}.{self._content_table} (urls)
+            USING 'sai';
+            """
+        )
+
+        # Index on parent_id
+        self._session.execute(
+            f"""
+            CREATE CUSTOM INDEX IF NOT EXISTS {self._content_table}_parent_index
+            ON {self._keyspace}.{self._content_table} (parent_id)
             USING 'sai';
             """
         )
@@ -117,6 +168,7 @@ class ContentGraph:
                         content.content_id,
                         content.parent_id,
                         content.kind,
+                        content.urls,
                         content.text_content,
                         next(text_contents_embedding) if content.text_content else None,
                     ),
@@ -129,14 +181,12 @@ class ContentGraph:
     def get_content_by_text(self, question: str, k: int = 10) -> Iterable[Content]:
         question_embedding = self._text_embedding.embed_query(question)
         results = self._session.execute(self._query_text_embedding, (question_embedding, k))
+        return _results_to_content(results)
 
-        return [
-            Content(
-                document_id=c.document_id,
-                content_id=c.content_id,
-                kind=c.kind,
-                parent_id=c.parent_id,
-                text_content=c.text_content,
-            )
-            for c in results
-        ]
+    def get_content_by_url(self, url: str) -> Iterable[Content]:
+        results = self._session.execute(self._query_by_url, (url, ))
+        return _results_to_content(results)
+
+    def get_content_by_parent(self, parent_id: str) -> Iterable[Content]:
+        results = self._session.execute(self._query_by_parent_id, (parent_id,))
+        return _results_to_content(results)
