@@ -32,5 +32,7 @@ class Content(BaseModel):
     content_id: str
     parent_id: Optional[str] = None
     kind: Kind
+    keywords: Set[str] = Field(default_factory = set)
     urls: Set[str] = Field(default_factory = set)
+    links: Set[str] = Field(default_factory = set)
     text_content: Optional[str] = None
