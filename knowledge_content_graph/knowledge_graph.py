@@ -1,4 +1,4 @@
-from typing import Iterable, List, Optional, Sequence, Union
+from typing import Dict, Iterable, List, Optional, Sequence, Set, Tuple, Union
 
 from cassandra.cluster import Session, ResponseFuture
 from cassandra.query import BatchStatement
@@ -9,11 +9,12 @@ from langchain_core.documents import Document
 
 from knowledge_content_graph.content import Content
 from knowledge_content_graph._utils import batched
+from knowledge_content_graph.embedding import Embedding
 
-def _results_to_content(results: ResponseFuture) -> List[Content]:
-    return [
-        Content(
-            document_id=c.document_id,
+def _results_to_content(results: ResponseFuture) -> Iterable[Content]:
+    for c in results:
+        yield Content(
+            source_id=c.source_id,
             content_id=c.content_id,
             parent_id=c.parent_id,
             kind=c.kind,
@@ -22,13 +23,10 @@ def _results_to_content(results: ResponseFuture) -> List[Content]:
             links=set(c.links) if c.links else set(),
             text_content=c.text_content,
         )
-        for c in results
-    ]
-
 class ContentGraph:
     def __init__(
         self,
-        text_embedding: Embeddings,
+        text_embedding: Embedding,
         content_table: str = "content",
         session: Optional[Session] = None,
         keyspace: Optional[str] = None,
@@ -61,21 +59,27 @@ class ContentGraph:
         self._insert_content = self._session.prepare(
             f"""
             INSERT INTO {keyspace}.{content_table} (
-                document_id, content_id, parent_id, kind, keywords, urls, links, text_content, text_embedding
+                source_id, content_id, parent_id, kind, keywords, urls, links, text_content, text_embedding
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """
         )
 
         SELECT = f"""
-        SELECT document_id, content_id, parent_id, kind, keywords, urls, links, text_content
+        SELECT source_id, content_id, parent_id, kind, keywords, urls, links, text_content
         FROM {keyspace}.{content_table}
         """
+
+        SELECT_IDS = f"""
+        SELECT source_id, content_id, parent_id
+        FROM {keyspace}.{content_table}
+        """
+
         self._query_text_embedding = self._session.prepare(
             f"{SELECT} ORDER BY text_embedding ANN OF ? LIMIT ?"
         )
 
-        self._query_by_keywords = self._session.prepare(
-            f"{SELECT} WHERE keywords CONTAINS ?"
+        self._query_ids_by_keyword = self._session.prepare(
+            f"{SELECT_IDS} WHERE keywords CONTAINS ?"
         )
 
         self._query_by_url = self._session.prepare(
@@ -90,16 +94,20 @@ class ContentGraph:
             f"{SELECT} WHERE parent_id = ?"
         )
 
+        self._query_by_content_ids = self._session.prepare(
+            f"{SELECT} WHERE source_id = ? AND content_id IN ?"
+        )
+
     def _apply_schema(self):
-        # Determine the dimensions of an embedded document.
-        text_embedding_dim = len(self._text_embedding.embed_documents(["hello"])[0])
+        text_embedding_dim = self._text_embedding.dimensions
+        print(f"Text Dim: {text_embedding_dim}")
 
         self._session.execute(
             f"""
             CREATE TABLE IF NOT EXISTS {self._keyspace}.{self._content_table} (
                 -- Content ID of the document this is part of.
-                document_id TEXT,
-                -- ID of this content. If this is a document, the content_id == document_id.
+                source_id TEXT,
+                -- ID of this content. If this is a document, the content_id == source_id.
                 content_id TEXT,
                 -- The ID of parent content, if any.
                 parent_id TEXT,
@@ -109,17 +117,17 @@ class ContentGraph:
                 keywords set<text>,
                 -- One or more URLs associated with the content. This allows providing
                 -- multiple URLs for documents that may have multiple locations.
-                urls set<text>,
+                urls SET<text>,
                 -- Set of URLs the content links to.
-                links set<text>,
+                links SET<text>,
                 -- If the content kind is a text passage or otherwise contains text, this
                 -- is the corresponding text content.
                 text_content TEXT,
-                text_embedding VECTOR <FLOAT, {text_embedding_dim}>,
+                text_embedding VECTOR<FLOAT, {text_embedding_dim}>,
 
-                -- Partition by document ID. This allows retrieval of all content from a single
+                -- Partition by source ID. This allows retrieval of all content from a single
                 -- document within a single partition.
-                PRIMARY KEY (document_id, content_id)
+                PRIMARY KEY (source_id, content_id)
             );
             """
         )
@@ -178,25 +186,53 @@ class ContentGraph:
             """
         )
 
+    def _document_to_content(self, doc: Document) -> Content:
+        urls = doc.metadata.get("urls", None)
+        if urls is None:
+            url = doc.metadata.get("url", None)
+            if url is None:
+                urls = set()
+            else:
+                urls = {url}
+
+        return Content(
+            source_id = doc.metadata["source_id"],
+            document_id = doc.metadata["document_id"],
+            parent_id = doc.metadata.get("parent_id", None),
+            kind = doc.metadata.get("kind", "passage"),
+            keywords = doc.metadata.get("keywords", set()),
+            links = doc.metadata.get("links", set()),
+            urls = urls,
+            text_content = doc.page_content
+        )
+
     def add_documents(self, documents: Iterable[Document]):
         """
         Loads the content of each document as a separate entry.
 
         The following metadata fields are used specially:
-        - `url` or `urls`, if present, contain the URLs of the document itself.
-          This may be a list or set, allowing for documents which are available
-          at multiple paths to be properly linked.
-        - `links`, if present, contain the URLs linked to by this document.
-        - `keywords`, if present, a set of keywords associated with the content.
-          Each content will be linked to other chunks with the same keywords, so
-          these should be specific to the contet (rather than the document). These
-          may be extracted by TF-IDF.
+        - `source_id`: The ID of the source of this document.
+        - `document_id`: The ID of this document.
+        - `kind` (optional): The kind of content this document represents.
+          If not set, defaults to `"passage"`.
+        - `parent_id` (optional): The ID this document is structurally part of.
+          If not specified, this is a top-level section.
+        - `url` or `urls` (optional): if present, contain the URLs of the
+          document itself. This may be a list or set, allowing for documents
+          which are available at multiple paths to be properly linked.
+        - `links` (optional): if present, contain the URLs linked to by this document.
+        - `keywords` (optional): if present, a set of keywords associated with
+          the content. Each content will be linked to other chunks with the same
+          keywords, so these should be specific to the contet (rather than the
+          document). These may be extracted by TF-IDF.
 
         Edges will be automatically added from a document A to the document B:
         - If document A links to document B, or
         - If there are overlapping keywords between document A and document B, or
         - If MDR embedding suggests document B is similar to (supports) document A.
         """
+        contents = [self._document_to_content(doc) for doc in documents]
+
         for document in documents:
             # TODO: Change the embedding to use MDR (directed) embedding.
             pass
@@ -207,12 +243,12 @@ class ContentGraph:
             batch_statement = BatchStatement()
 
             text_contents = [c.text_content for c in batch if c.text_content]
-            text_contents_embedding = iter(self._text_embedding.embed_documents(text_contents))
+            text_contents_embedding = iter(self._text_embedding.embed_passages(text_contents))
             for content in batch:
                 batch_statement.add(
                     self._insert_content,
                     (
-                        content.document_id,
+                        content.source_id,
                         content.content_id,
                         content.parent_id,
                         content.kind,
@@ -229,7 +265,7 @@ class ContentGraph:
         pass
 
     def get_content_by_text(self, question: str, k: int = 10) -> Iterable[Content]:
-        question_embedding = self._text_embedding.embed_query(question)
+        question_embedding = self._text_embedding.embed_question(question)
         results = self._session.execute(self._query_text_embedding, (question_embedding, k))
         return _results_to_content(results)
 
@@ -240,3 +276,25 @@ class ContentGraph:
     def get_content_by_parent(self, parent_id: str) -> Iterable[Content]:
         results = self._session.execute(self._query_by_parent_id, (parent_id,))
         return _results_to_content(results)
+
+    def get_content_by_keyword(self, keywords: Union[str, Iterable[str]]) -> Iterable[Content]:
+        keyword_list = []
+        if isinstance(keywords, str):
+            keyword_list = [keywords]
+        else:
+            keyword_list = list(keywords)
+
+        # TODO: Make async
+        source_content_ids: Dict[str, Set[str]] = {}
+        for keyword in keyword_list:
+            for row in self._session.execute(self._query_ids_by_keyword, (keyword,)):
+                source_content_ids.setdefault(row.source_id, set()).add(row.content_id)
+
+        return self._get_content_by_ids(source_content_ids)
+
+    def _get_content_by_ids(self, source_content_ids: Dict[str, Iterable[str]]) -> Iterable[Content]:
+        # TODO: Make async
+        for source_id, content_ids in source_content_ids.items():
+            rows = self._session.execute(self._query_by_content_ids, (source_id, content_ids))
+            for content in _results_to_content(rows):
+                yield content

@@ -1,13 +1,13 @@
 import secrets
-from typing import Iterator, List
+from typing import Iterator
 
 import pytest
 from cassandra.cluster import Cluster, Session
-from langchain_core.embeddings import Embeddings
 from langchain_core.language_models import BaseChatModel
 from testcontainers.core.container import DockerContainer
 from testcontainers.core.waiting_utils import wait_for_logs
 
+from knowledge_content_graph.embedding import Embedding, InstructorEmbedding
 from knowledge_content_graph.knowledge_graph import ContentGraph
 
 
@@ -59,16 +59,15 @@ def local_llm() -> BaseChatModel:
 
 
 @pytest.fixture(scope="session")
-def local_embedding() -> Embeddings:
-    from langchain_community.embeddings import HuggingFaceEmbeddings
-    return HuggingFaceEmbeddings()
+def local_embedding() -> Embedding:
+    return InstructorEmbedding()
 
 
 class DataFixture:
     def __init__(self,
                  session: Session,
                  keyspace: str,
-                 text_embedding: Embeddings) -> None:
+                 text_embedding: Embedding) -> None:
         self.session = session
         self.keyspace = "default_keyspace"
         self.uid = secrets.token_hex(8)

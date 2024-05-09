@@ -28,7 +28,7 @@ class Kind(str, Enum):
 
 
 class Content(BaseModel):
-    document_id: str
+    source_id: str
     content_id: str
     parent_id: Optional[str] = None
     kind: Kind
