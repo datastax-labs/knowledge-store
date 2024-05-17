@@ -21,6 +21,7 @@ pytest-asyncio = "^0.23.6"
 testcontainers = "^4.4.0"
 langchain-community = "^0.0.36"
 ipykernel = "^6.29.4"
+langchain-openai = "^0.1.7"
 
 [build-system]
 requires = ["poetry-core"]

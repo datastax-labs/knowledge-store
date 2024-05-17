@@ -1,14 +1,14 @@
 import secrets
-from typing import Iterator
+from typing import Iterable, Iterator
 
 import pytest
 from cassandra.cluster import Cluster, Session
-from langchain_core.language_models import BaseChatModel
+from langchain_core.embeddings import Embeddings
+from langchain_core.documents import Document
 from testcontainers.core.container import DockerContainer
 from testcontainers.core.waiting_utils import wait_for_logs
 
-from knowledge_content_graph.embedding import Embedding, InstructorEmbedding
-from knowledge_content_graph.knowledge_graph import ContentGraph
+from knowledge_content_graph.knowledge_store import KnowledgeStore
 
 
 @pytest.fixture(scope="session")
@@ -53,39 +53,45 @@ def db_session(cassandra_port: int) -> Session:
 
 
 @pytest.fixture(scope="session")
-def local_llm() -> BaseChatModel:
-    from langchain_community.llms import Ollama
-    return Ollama(model="llama2")
-
+def openai_embedding() -> Embeddings:
+    from langchain_openai import OpenAIEmbeddings
+    return OpenAIEmbeddings()
 
 @pytest.fixture(scope="session")
-def local_embedding() -> Embedding:
-    return InstructorEmbedding()
-
+def local_embedding() -> Embeddings:
+    from langchain_community.embeddings.ollama import OllamaEmbeddings
+    return OllamaEmbeddings()
 
 class DataFixture:
-    def __init__(self,
-                 session: Session,
-                 keyspace: str,
-                 text_embedding: Embedding) -> None:
+    def __init__(self, session: Session, keyspace: str, embedding: Embeddings) -> None:
         self.session = session
         self.keyspace = "default_keyspace"
         self.uid = secrets.token_hex(8)
         self.content_table = f"content_{self.uid}"
-        self.graph = ContentGraph(
-            text_embedding,
-            content_table=self.content_table,
-            session=session,
-            keyspace=keyspace,
-        )
+        self.embedding = embedding
+        self._store = None
+
+    def store(self, initial_documents: Iterable[Document] = []) -> KnowledgeStore:
+        if initial_documents and self._store is not None:
+            raise ValueError("Store already initialized")
+        elif self._store is None:
+            self._store = KnowledgeStore.from_documents(
+                initial_documents,
+                self.embedding,
+                session=self.session,
+                keyspace=self.keyspace,
+            )
+
+        return self._store
 
     def drop(self):
         self.session.execute(f"DROP TABLE IF EXISTS {self.keyspace}.{self.content_table};")
 
+
 @pytest.fixture()
-def fresh_fixture(db_session: Session,
-                  db_keyspace: str,
-                  local_embedding) -> Iterator[DataFixture]:
-    data = DataFixture(session=db_session, keyspace=db_keyspace, text_embedding=local_embedding)
+def fresh_fixture(
+    db_session: Session, db_keyspace: str, local_embedding: Embeddings
+) -> Iterator[DataFixture]:
+    data = DataFixture(session=db_session, keyspace=db_keyspace, embedding=local_embedding)
     yield data
     data.drop()

@@ -1,3 +1,4 @@
+from itertools import repeat
 from typing import Dict, Iterable, List, Optional, Sequence, Set, Tuple, Union
 
 from cassandra.cluster import Session, ResponseFuture
@@ -11,6 +12,7 @@ from knowledge_content_graph.content import Content
 from knowledge_content_graph._utils import batched
 from knowledge_content_graph.embedding import Embedding
 
+
 def _results_to_content(results: ResponseFuture) -> Iterable[Content]:
     for c in results:
         yield Content(
@@ -23,6 +25,8 @@ def _results_to_content(results: ResponseFuture) -> Iterable[Content]:
             links=set(c.links) if c.links else set(),
             text_content=c.text_content,
         )
+
+
 class ContentGraph:
     def __init__(
         self,
@@ -53,14 +57,45 @@ class ContentGraph:
         self._content_table = content_table
         self._text_embedding = text_embedding
 
+        text_embedding_dim = text_embedding.dimensions
+        self._columns = {
+            # Content ID of the document this is part of.
+            "source_id": "TEXT",
+            # ID of this content. If this is a document, the content_id == source_id.
+            "content_id": "TEXT",
+            "parent_id": "TEXT",
+            # The content kind. This should be one of the suported / known kinds.
+            "kind": "TEXT",
+            # Keywords associated with the chunk.
+            "keywords": "SET<TEXT>",
+            # One or more URLs associated with the content. This allows providing
+            # multiple URLs for documents that may have multiple locations.
+            "urls": "SET<TEXT>",
+            # Set of URLs the content links to.
+            "links": "SET<TEXT>",
+            # Text content, if the content kind is a text passage or otherwise contains text.
+            "text_content": "TEXT",
+            # Embedding of the text content for retrieval. This allows navigating
+            # from question to chunks answering the question.
+            "text_embedding": f"VECTOR<FLOAT, {text_embedding_dim}>",
+            # Embedding of the text as something that can be supported. This allows
+            # navigating to *other* chunks that support this.
+            "text_for_support_embedding": f"VECTOR<FLOAT, {text_embedding_dim}>",
+        }
         if apply_schema:
             self._apply_schema()
 
+        insert = f"""
+            INSERT INTO {keyspace}.{content_table} (
+                {", ".join(self._columns.keys())}
+            ) VALUES ({", ".join(repeat("?", len(self._columns.keys())))}))
+            """
+        print(insert)
         self._insert_content = self._session.prepare(
             f"""
             INSERT INTO {keyspace}.{content_table} (
-                source_id, content_id, parent_id, kind, keywords, urls, links, text_content, text_embedding
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                {", ".join(self._columns.keys())}
+            ) VALUES ({", ".join(repeat("?", len(self._columns.keys())))})
             """
         )
 
@@ -82,61 +117,44 @@ class ContentGraph:
             f"{SELECT_IDS} WHERE keywords CONTAINS ?"
         )
 
-        self._query_by_url = self._session.prepare(
-            f"{SELECT} WHERE urls CONTAINS ?"
-        )
+        self._query_by_url = self._session.prepare(f"{SELECT} WHERE urls CONTAINS ?")
 
-        self._query_by_link = self._session.prepare(
-            f"{SELECT} WHERE links CONTAINS ?"
-        )
+        self._query_by_link = self._session.prepare(f"{SELECT} WHERE links CONTAINS ?")
 
-        self._query_by_parent_id = self._session.prepare(
-            f"{SELECT} WHERE parent_id = ?"
-        )
+        self._query_by_parent_id = self._session.prepare(f"{SELECT} WHERE parent_id = ?")
 
         self._query_by_content_ids = self._session.prepare(
             f"{SELECT} WHERE source_id = ? AND content_id IN ?"
         )
 
     def _apply_schema(self):
-        text_embedding_dim = self._text_embedding.dimensions
-        print(f"Text Dim: {text_embedding_dim}")
-
-        self._session.execute(
-            f"""
+        schema_columns = ",\n        ".join(
+            [f"{field} {field_type}" for field, field_type in self._columns.items()]
+        )
+        create_table = f"""
             CREATE TABLE IF NOT EXISTS {self._keyspace}.{self._content_table} (
-                -- Content ID of the document this is part of.
-                source_id TEXT,
-                -- ID of this content. If this is a document, the content_id == source_id.
-                content_id TEXT,
-                -- The ID of parent content, if any.
-                parent_id TEXT,
-                -- The content kind. This should be one of the supported / known kinds.
-                kind TEXT,
-                -- Keywords associated with the chunk.
-                keywords set<text>,
-                -- One or more URLs associated with the content. This allows providing
-                -- multiple URLs for documents that may have multiple locations.
-                urls SET<text>,
-                -- Set of URLs the content links to.
-                links SET<text>,
-                -- If the content kind is a text passage or otherwise contains text, this
-                -- is the corresponding text content.
-                text_content TEXT,
-                text_embedding VECTOR<FLOAT, {text_embedding_dim}>,
+            {schema_columns},
 
-                -- Partition by source ID. This allows retrieval of all content from a single
-                -- document within a single partition.
-                PRIMARY KEY (source_id, content_id)
+            PRIMARY KEY (source_id, content_id)
             );
             """
-        )
+        print(create_table)
+        self._session.execute(create_table)
 
         # Index on text_embedding (for similarity)
         self._session.execute(
             f"""
             CREATE CUSTOM INDEX IF NOT EXISTS {self._content_table}_text_embedding_index
             ON {self._keyspace}.{self._content_table}(text_embedding)
+            USING 'sai';
+            """
+        )
+
+        # Index on text_for_support_embedding (for similarity)
+        self._session.execute(
+            f"""
+            CREATE CUSTOM INDEX IF NOT EXISTS {self._content_table}_text_for_support_embedding_index
+            ON {self._keyspace}.{self._content_table}(text_for_support_embedding)
             USING 'sai';
             """
         )
@@ -196,14 +214,14 @@ class ContentGraph:
                 urls = {url}
 
         return Content(
-            source_id = doc.metadata["source_id"],
-            document_id = doc.metadata["document_id"],
-            parent_id = doc.metadata.get("parent_id", None),
-            kind = doc.metadata.get("kind", "passage"),
-            keywords = doc.metadata.get("keywords", set()),
-            links = doc.metadata.get("links", set()),
-            urls = urls,
-            text_content = doc.page_content
+            source_id=doc.metadata["source_id"],
+            document_id=doc.metadata["document_id"],
+            parent_id=doc.metadata.get("parent_id", None),
+            kind=doc.metadata.get("kind", "passage"),
+            keywords=doc.metadata.get("keywords", set()),
+            links=doc.metadata.get("links", set()),
+            urls=urls,
+            text_content=doc.page_content,
         )
 
     def add_documents(self, documents: Iterable[Document]):
@@ -244,6 +262,9 @@ class ContentGraph:
 
             text_contents = [c.text_content for c in batch if c.text_content]
             text_contents_embedding = iter(self._text_embedding.embed_passages(text_contents))
+            text_contents_embedding_for_support = iter(
+                self._text_embedding.embed_passages_for_support(text_contents)
+            )
             for content in batch:
                 batch_statement.add(
                     self._insert_content,
@@ -257,6 +278,9 @@ class ContentGraph:
                         content.links,
                         content.text_content,
                         next(text_contents_embedding) if content.text_content else None,
+                        next(text_contents_embedding_for_support)
+                        if content.text_content
+                        else None,
                     ),
                 )
 
@@ -270,7 +294,7 @@ class ContentGraph:
         return _results_to_content(results)
 
     def get_content_by_url(self, url: str) -> Iterable[Content]:
-        results = self._session.execute(self._query_by_url, (url, ))
+        results = self._session.execute(self._query_by_url, (url,))
         return _results_to_content(results)
 
     def get_content_by_parent(self, parent_id: str) -> Iterable[Content]:
@@ -292,7 +316,9 @@ class ContentGraph:
 
         return self._get_content_by_ids(source_content_ids)
 
-    def _get_content_by_ids(self, source_content_ids: Dict[str, Iterable[str]]) -> Iterable[Content]:
+    def _get_content_by_ids(
+        self, source_content_ids: Dict[str, Iterable[str]]
+    ) -> Iterable[Content]:
         # TODO: Make async
         for source_id, content_ids in source_content_ids.items():
             rows = self._session.execute(self._query_by_content_ids, (source_id, content_ids))
