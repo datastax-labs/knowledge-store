@@ -8,7 +8,7 @@ from langchain_core.embeddings import Embeddings
 from langchain_core.runnables import Runnable, RunnableLambda
 from langchain_core.vectorstores import VectorStore
 
-from knowledge_content_graph.concurrency import ConcurrentQueries
+from knowledge_store.concurrency import ConcurrentQueries
 
 CONTENT_ID = "content_id"
 PARENT_CONTENT_ID = "parent_content_id"

@@ -8,7 +8,7 @@ from langchain_core.embeddings import Embeddings
 from testcontainers.core.container import DockerContainer
 from testcontainers.core.waiting_utils import wait_for_logs
 
-from knowledge_content_graph.knowledge_store import KnowledgeStore
+from knowledge_store.knowledge_store import KnowledgeStore
 
 
 @pytest.fixture(scope="session")

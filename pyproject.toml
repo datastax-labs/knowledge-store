@@ -1,10 +1,10 @@
 [tool.poetry]
-name = "knowledge-content-graph"
+name = "knowledge-store"
 version = "0.1.0"
-description = "Capture vectors and links between content."
+description = "Hybrid knowledge store compbining vector (similarity) and graph (edges)."
 authors = ["Ben Chambers <35960+bjchambers@users.noreply.github.com>"]
 readme = "README.md"
-packages = [{include = "knowledge_content_graph"}]
+packages = [{include = "knowledge_store"}]
 
 [tool.poetry.dependencies]
 python = "^3.11"
