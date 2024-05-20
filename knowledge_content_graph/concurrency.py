@@ -1,13 +1,15 @@
 import contextlib
 import threading
 from types import TracebackType
-from typing import Any, Optional, Tuple, Type
-from cassandra.cluster import Session, ResponseFuture
+from typing import Any, Optional, Self, Tuple, Type
+
+from cassandra.cluster import ResponseFuture, Session
 from cassandra.query import PreparedStatement
 
+
 class ConcurrentQueries(contextlib.AbstractContextManager):
-    """Context manager for concurrent queries.
-    """
+    """Context manager for concurrent queries."""
+
     def __init__(self, session: Session, *, concurrency: int = 20) -> None:
         self._session = session
         self._semaphore = threading.Semaphore(concurrency)
@@ -15,7 +17,7 @@ class ConcurrentQueries(contextlib.AbstractContextManager):
 
         self._error = None
 
-    def _handle_result(self, _result):
+    def _handle_result(self, _result: Any):
         self._semaphore.release()
         with self._completion:
             self._completion.notify()
@@ -34,10 +36,15 @@ class ConcurrentQueries(contextlib.AbstractContextManager):
         future: ResponseFuture = self._session.execute_async(query, parameters)
         future.add_callbacks(self._handle_result, self._handle_error)
 
-    def __exit__(self,
-                 _exc_type: Optional[Type[BaseException]],
-                 _exc_inst: Optional[BaseException],
-                 _exc_traceback: Optional[TracebackType]) -> bool:
+    def __enter__(self) -> Self:
+        return super().__enter__()
+
+    def __exit__(
+        self,
+        _exc_type: Optional[Type[BaseException]],
+        _exc_inst: Optional[BaseException],
+        _exc_traceback: Optional[TracebackType],
+    ) -> bool:
         with self._completion:
             self._completion.wait()
 

@@ -3,8 +3,8 @@ from typing import Iterable, Iterator, Optional
 
 import pytest
 from cassandra.cluster import Cluster, Session
-from langchain_core.embeddings import Embeddings
 from langchain_core.documents import Document
+from langchain_core.embeddings import Embeddings
 from testcontainers.core.container import DockerContainer
 from testcontainers.core.waiting_utils import wait_for_logs
 
@@ -55,12 +55,16 @@ def db_session(cassandra_port: int) -> Session:
 @pytest.fixture(scope="session")
 def openai_embedding() -> Embeddings:
     from langchain_openai import OpenAIEmbeddings
+
     return OpenAIEmbeddings()
+
 
 @pytest.fixture(scope="session")
 def local_embedding() -> Embeddings:
     from langchain_community.embeddings.ollama import OllamaEmbeddings
+
     return OllamaEmbeddings()
+
 
 class DataFixture:
     def __init__(self, session: Session, keyspace: str, embedding: Embeddings) -> None:
@@ -72,9 +76,9 @@ class DataFixture:
         self.embedding = embedding
         self._store = None
 
-    def store(self,
-              initial_documents: Iterable[Document] = [],
-              ids: Optional[Iterable[str]] = None) -> KnowledgeStore:
+    def store(
+        self, initial_documents: Iterable[Document] = [], ids: Optional[Iterable[str]] = None
+    ) -> KnowledgeStore:
         if initial_documents and self._store is not None:
             raise ValueError("Store already initialized")
         elif self._store is None:
@@ -85,7 +89,7 @@ class DataFixture:
                 keyspace=self.keyspace,
                 node_table=self.node_table,
                 edge_table=self.edge_table,
-                ids = ids,
+                ids=ids,
             )
 
         return self._store

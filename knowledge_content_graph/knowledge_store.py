@@ -1,38 +1,41 @@
-from itertools import repeat
-import threading
-from typing import Any, Dict, Iterable, List, Optional, Self, Set, Union
 import uuid
+from typing import Any, Dict, Iterable, List, Optional, Self, Set, Union
 
-from cassandra.cluster import Session, ResponseFuture
-from cassandra.query import BatchStatement
+from cassandra.cluster import ResponseFuture, Session
 from cassio.config import check_resolve_keyspace, check_resolve_session
-
-from langchain_core.runnables import Runnable, RunnableLambda
-from langchain_core.vectorstores import VectorStore
 from langchain_core.documents import Document
 from langchain_core.embeddings import Embeddings
+from langchain_core.runnables import Runnable, RunnableLambda
+from langchain_core.vectorstores import VectorStore
 
 from knowledge_content_graph.concurrency import ConcurrentQueries
 
 CONTENT_ID = "content_id"
 PARENT_CONTENT_ID = "parent_content_id"
+KEYWORDS = "keywords"
+
 
 def _row_to_document(row) -> Document:
     return Document(
-        page_content = row.text_content,
-        metadata = {
+        page_content=row.text_content,
+        metadata={
             CONTENT_ID: row.content_id,
             "kind": row.kind,
-        }
+        },
     )
 
-def _results_to_documents(results: ResponseFuture) -> Iterable[Document]:
-    for row in results:
-        yield _row_to_document(row)
 
-def _results_to_ids(results: ResponseFuture) -> Iterable[str]:
-    for row in results:
-        yield row.content_id
+def _results_to_documents(results: Optional[ResponseFuture]) -> Iterable[Document]:
+    if results:
+        for row in results:
+            yield _row_to_document(row)
+
+
+def _results_to_ids(results: Optional[ResponseFuture]) -> Iterable[str]:
+    if results:
+        for row in results:
+            yield row.content_id
+
 
 class KnowledgeStore(VectorStore):
     """A hybrid vector-and-graph knowledge store.
@@ -100,8 +103,8 @@ class KnowledgeStore(VectorStore):
         self._insert_passage = session.prepare(
             f"""
             INSERT INTO {keyspace}.{node_table} (
-                content_id, kind, text_content, text_embedding
-            ) VALUES (?, 'passage', ?, ?)
+                content_id, kind, text_content, text_embedding, keywords
+            ) VALUES (?, 'passage', ?, ?, ?)
             """
         )
 
@@ -147,6 +150,14 @@ class KnowledgeStore(VectorStore):
             """
         )
 
+        self._query_ids_by_keyword = session.prepare(
+            f"""
+            SELECT content_id
+            FROM {keyspace}.{node_table}
+            WHERE keywords CONTAINS ?
+            """
+        )
+
     def _apply_schema(self):
         """Apply the schema to the database."""
         embedding_dim = len(self._embedding.embed_query("Test Query"))
@@ -156,6 +167,8 @@ class KnowledgeStore(VectorStore):
                 kind TEXT,
                 text_content TEXT,
                 text_embedding VECTOR<FLOAT, {embedding_dim}>,
+
+                keywords SET<TEXT>,
 
                 PRIMARY KEY (content_id)
             )
@@ -178,6 +191,16 @@ class KnowledgeStore(VectorStore):
         self._session.execute(
             f"""CREATE CUSTOM INDEX IF NOT EXISTS {self._node_table}_text_embedding_index
             ON {self._keyspace}.{self._node_table}(text_embedding)
+            USING 'sai';
+            """
+        )
+
+        # Index on keywords
+        # TODO: Case insensitivity?
+        self._session.execute(
+            f"""
+            CREATE CUSTOM INDEX IF NOT EXISTS {self._node_table}_keywords_index
+            ON {self._keyspace}.{self._node_table} (keywords)
             USING 'sai';
             """
         )
@@ -206,17 +229,38 @@ class KnowledgeStore(VectorStore):
         """
         texts = list(texts)
 
-        metadatas: Iterable[Dict[str, str]] = [{} for _ in texts] if metadatas is None else metadatas
-        ids = [uuid.uuid4().hex if md.get(CONTENT_ID) is None else md[CONTENT_ID] for md in metadatas]
+        metadatas: Iterable[Dict[str, str]] = (
+            [{} for _ in texts] if metadatas is None else metadatas
+        )
         text_embeddings = self._embedding.embed_documents(texts)
 
+        # TODO: Retrieve keywords concurrently?
+        keywords_in_texts = {k for md in metadatas for k in md.get(KEYWORDS, {})}
+        keywords_to_ids = {
+            k: set(_results_to_ids(self._session.execute(self._query_ids_by_keyword, (k,))))
+            for k in keywords_in_texts
+        }
+
         with ConcurrentQueries(self._session, concurrency=self._concurrency) as cq:
-            tuples = zip(texts, text_embeddings, metadatas, ids, strict=True)
-            for (text, text_embedding, metadata, id) in tuples:
-                cq.execute(self._insert_passage, (id, text, text_embedding))
+            tuples = zip(texts, text_embeddings, metadatas, strict=True)
+            for text, text_embedding, metadata in tuples:
+                id = metadata.get(CONTENT_ID) or uuid.uuid4().hex
+                keywords = metadata.get(KEYWORDS, set())
+
+                cq.execute(self._insert_passage, (id, text, text_embedding, keywords))
 
                 if (parent_content_id := metadata.get(PARENT_CONTENT_ID)) is not None:
                     cq.execute(self._insert_edge, (id, str(parent_content_id)))
+                if self._infer_keywords and keywords:
+                    related_ids = set()
+                    for k in keywords:
+                        k_ids = keywords_to_ids.setdefault(k, set())
+                        related_ids.update(k_ids)
+                        k_ids.add(id)
+
+                    for r in related_ids:
+                        cq.execute(self._insert_edge, (id, r))
+                        cq.execute(self._insert_edge, (r, id))
 
     # TODO: Async
     @classmethod
@@ -260,11 +304,11 @@ class KnowledgeStore(VectorStore):
 
     # TODO: Async
     def similarity_search_by_vector(
-            self,
-            query_vector: List[float],
-            *,
-            k: int = 4,
-            metadata_filter: Dict[str, str] = {},
+        self,
+        query_vector: List[float],
+        *,
+        k: int = 4,
+        metadata_filter: Dict[str, str] = {},
     ) -> List[Document]:
         """Return docs most similar to query_vector.
 
@@ -279,10 +323,10 @@ class KnowledgeStore(VectorStore):
         return _results_to_documents(results)
 
     def _similarity_search_ids(
-            self,
-            query: str,
-            *,
-            k: int = 4,
+        self,
+        query: str,
+        *,
+        k: int = 4,
     ) -> Iterable[str]:
         "Return content IDs of documents by similarity to `query`."
         query_vector = self._embedding.embed_query(query)
@@ -290,27 +334,26 @@ class KnowledgeStore(VectorStore):
         return _results_to_ids(results)
 
     def _query_by_ids(
-            self,
-            ids: Iterable[str],
+        self,
+        ids: Iterable[str],
     ) -> Iterable[Document]:
         # TODO: Concurrency.
-        return [_row_to_document(row)
+        return [
+            _row_to_document(row)
             for id in ids
-            for row in self._session.execute(self._query_by_id, (id, ))
+            for row in self._session.execute(self._query_by_id, (id,))
         ]
 
     def _linked_ids(
-            self,
-            source_id: str,
+        self,
+        source_id: str,
     ) -> Iterable[str]:
-        results = self._session.execute(self._query_linked_ids, (source_id, ))
+        results = self._session.execute(self._query_linked_ids, (source_id,))
         return _results_to_ids(results)
 
-    def retrieve(self,
-                 query: Union[str, Iterable[str]],
-                 *,
-                 k: int = 4,
-                 depth: int = 1) -> Iterable[Document]:
+    def retrieve(
+        self, query: Union[str, Iterable[str]], *, k: int = 4, depth: int = 1
+    ) -> Iterable[Document]:
         """Return a runnable for retrieving from this knowledge store.
 
         First, `k` nodes are retrieved using a vector search for each `query` string.
@@ -325,30 +368,33 @@ class KnowledgeStore(VectorStore):
         Returns:
             Collection of retrieved documents.
         """
-        if not isinstance(query, Iterable):
+        if isinstance(query, str):
             query = [query]
 
-        start_ids = { content_id
-                     for q in query
-                     for content_id in self._similarity_search_ids(q, k=k) }
+        start_ids = {
+            content_id for q in query for content_id in self._similarity_search_ids(q, k=k)
+        }
 
         result_ids = start_ids
         source_ids = start_ids
         for _ in range(0, depth):
             # TODO: Concurrency
-            level_ids = { content_id
-                          for source_id in source_ids
-                          for content_id in self._linked_ids(source_id) }
+            level_ids = {
+                content_id
+                for source_id in source_ids
+                for content_id in self._linked_ids(source_id)
+            }
             result_ids.update(level_ids)
             source_ids = level_ids
 
         return self._query_by_ids(result_ids)
 
-    def as_retriever(self,
-                     *,
-                     k: int = 4,
-                     depth: int = 1,
-                     ) -> Runnable[Union[str | Iterable[str]], Iterable[Document]]:
+    def as_retriever(
+        self,
+        *,
+        k: int = 4,
+        depth: int = 1,
+    ) -> Runnable[Union[str | Iterable[str]], Iterable[Document]]:
         """Return a runnable for retrieving from this knowldege store.
 
         The initial nodes are retrieved using a vector search.
@@ -363,7 +409,4 @@ class KnowledgeStore(VectorStore):
             returning corresponding the documents.
         """
         # TODO: Async version
-        return RunnableLambda(func=self.retrieve).bind(
-            k=k,
-            depth=depth
-        )
+        return RunnableLambda(func=self.retrieve).bind(k=k, depth=depth)
