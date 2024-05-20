@@ -30,7 +30,7 @@ def test_write_retrieve(fresh_fixture: DataFixture):
     assert list(map(lambda d: d.page_content, results)) == [doc2.page_content, doc1.page_content]
 
     results = store.retrieve("Earth", k=2, depth=0)
-    assert list(map(lambda d: d.page_content, results)) == [doc2.page_content, doc1.page_content]
+    assert set(map(lambda d: d.page_content, results)) == {doc2.page_content, doc1.page_content}
 
     results = store.retrieve("Earth", k=2, depth=1)
-    assert list(map(lambda d: d.page_content, results)) == [doc2.page_content, doc1.page_content, greetings.page_content]
+    assert set(map(lambda d: d.page_content, results)) == {doc2.page_content, doc1.page_content, greetings.page_content}

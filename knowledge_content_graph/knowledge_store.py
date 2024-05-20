@@ -139,6 +139,14 @@ class KnowledgeStore(VectorStore):
             """
         )
 
+        self._query_linked_ids = session.prepare(
+            f"""
+            SELECT target_content_id AS content_id
+            FROM {keyspace}.{edge_table}
+            WHERE source_content_id = ?
+            """
+        )
+
     def _apply_schema(self):
         """Apply the schema to the database."""
         embedding_dim = len(self._embedding.embed_query("Test Query"))
@@ -291,6 +299,13 @@ class KnowledgeStore(VectorStore):
             for row in self._session.execute(self._query_by_id, (id, ))
         ]
 
+    def _linked_ids(
+            self,
+            source_id: str,
+    ) -> Iterable[str]:
+        results = self._session.execute(self._query_linked_ids, (source_id, ))
+        return _results_to_ids(results)
+
     def retrieve(self,
                  query: Union[str, Iterable[str]],
                  *,
@@ -317,8 +332,17 @@ class KnowledgeStore(VectorStore):
                      for q in query
                      for content_id in self._similarity_search_ids(q, k=k) }
 
-        assert depth == 0
-        return self._query_by_ids(start_ids)
+        result_ids = start_ids
+        source_ids = start_ids
+        for _ in range(0, depth):
+            # TODO: Concurrency
+            level_ids = { content_id
+                          for source_id in source_ids
+                          for content_id in self._linked_ids(source_id) }
+            result_ids.update(level_ids)
+            source_ids = level_ids
+
+        return self._query_by_ids(result_ids)
 
     def as_retriever(self,
                      *,
