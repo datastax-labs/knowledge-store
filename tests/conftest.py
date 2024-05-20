@@ -1,5 +1,5 @@
 import secrets
-from typing import Iterable, Iterator
+from typing import Iterable, Iterator, Optional
 
 import pytest
 from cassandra.cluster import Cluster, Session
@@ -67,11 +67,14 @@ class DataFixture:
         self.session = session
         self.keyspace = "default_keyspace"
         self.uid = secrets.token_hex(8)
-        self.content_table = f"content_{self.uid}"
+        self.node_table = f"nodes_{self.uid}"
+        self.edge_table = f"edges_{self.uid}"
         self.embedding = embedding
         self._store = None
 
-    def store(self, initial_documents: Iterable[Document] = []) -> KnowledgeStore:
+    def store(self,
+              initial_documents: Iterable[Document] = [],
+              ids: Optional[Iterable[str]] = None) -> KnowledgeStore:
         if initial_documents and self._store is not None:
             raise ValueError("Store already initialized")
         elif self._store is None:
@@ -80,12 +83,16 @@ class DataFixture:
                 self.embedding,
                 session=self.session,
                 keyspace=self.keyspace,
+                node_table=self.node_table,
+                edge_table=self.edge_table,
+                ids = ids,
             )
 
         return self._store
 
     def drop(self):
-        self.session.execute(f"DROP TABLE IF EXISTS {self.keyspace}.{self.content_table};")
+        self.session.execute(f"DROP TABLE IF EXISTS {self.keyspace}.{self.node_table};")
+        self.session.execute(f"DROP TABLE IF EXISTS {self.keyspace}.{self.edge_table};")
 
 
 @pytest.fixture()
