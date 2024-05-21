@@ -1,3 +1,4 @@
+import secrets
 import uuid
 from typing import Any, Dict, Iterable, List, Optional, Self, Set, Union
 
@@ -191,7 +192,7 @@ class KnowledgeStore(VectorStore):
         self._session.execute(
             f"""CREATE CUSTOM INDEX IF NOT EXISTS {self._node_table}_text_embedding_index
             ON {self._keyspace}.{self._node_table}(text_embedding)
-            USING 'sai';
+            USING 'StorageAttachedIndex';
             """
         )
 
@@ -201,7 +202,7 @@ class KnowledgeStore(VectorStore):
             f"""
             CREATE CUSTOM INDEX IF NOT EXISTS {self._node_table}_keywords_index
             ON {self._keyspace}.{self._node_table} (keywords)
-            USING 'sai';
+            USING 'StorageAttachedIndex';
             """
         )
 
@@ -244,7 +245,7 @@ class KnowledgeStore(VectorStore):
         with ConcurrentQueries(self._session, concurrency=self._concurrency) as cq:
             tuples = zip(texts, text_embeddings, metadatas, strict=True)
             for text, text_embedding, metadata in tuples:
-                id = metadata.get(CONTENT_ID) or uuid.uuid4().hex
+                id = metadata.get(CONTENT_ID) or secrets.token_hex(8)
                 keywords = metadata.get(KEYWORDS, set())
 
                 cq.execute(self._insert_passage, (id, text, text_embedding, keywords))
@@ -409,4 +410,5 @@ class KnowledgeStore(VectorStore):
             returning corresponding the documents.
         """
         # TODO: Async version
-        return RunnableLambda(func=self.retrieve).bind(k=k, depth=depth)
+        retriever = RunnableLambda(func=self.retrieve, name="Knowledge Store Retriever")
+        return retriever.bind(k=k, depth=depth)
