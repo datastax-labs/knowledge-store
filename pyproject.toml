@@ -1,14 +1,14 @@
 [tool.poetry]
 name = "knowledge-store"
 version = "0.1.0"
-description = "Hybrid knowledge store compbining vector (similarity) and graph (edges)."
+description = "Hybrid knowledge store combining vector (similarity) and graph (edges)."
 authors = ["Ben Chambers <35960+bjchambers@users.noreply.github.com>"]
 readme = "README.md"
 packages = [{include = "knowledge_store"}]
 
 [tool.poetry.dependencies]
 python = "^3.10"
-langchain-core = "^0.1.50"
+langchain-core = "^0.2"
 cassio = "^0.1.7"
 
 [tool.poetry.group.dev.dependencies]
@@ -17,7 +17,7 @@ pytest = "^8.2.0"
 mypy = "^1.10.0"
 pytest-asyncio = "^0.23.6"
 testcontainers = "^4.4.0"
-langchain-community = "^0.0.36"
+langchain-community = "^0.2"
 ipykernel = "^6.29.4"
 langchain-openai = "^0.1.7"
 
