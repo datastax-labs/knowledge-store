@@ -1,7 +1,7 @@
 import contextlib
 import threading
 from types import TracebackType
-from typing import Any, Optional, Self, Tuple, Type
+from typing import Any, Optional, Tuple, Type
 
 from cassandra.cluster import ResponseFuture, Session
 from cassandra.query import PreparedStatement
@@ -36,7 +36,7 @@ class ConcurrentQueries(contextlib.AbstractContextManager):
         future: ResponseFuture = self._session.execute_async(query, parameters)
         future.add_callbacks(self._handle_result, self._handle_error)
 
-    def __enter__(self) -> Self:
+    def __enter__(self) -> "ConcurrentQueries":
         return super().__enter__()
 
     def __exit__(

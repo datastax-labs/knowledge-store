@@ -1,5 +1,5 @@
 import secrets
-from typing import Any, Dict, Iterable, List, Optional, Self, Set, Union
+from typing import Any, Dict, Iterable, List, Optional, Set, Union
 
 from cassandra.cluster import ResponseFuture, Session
 from cassio.config import check_resolve_keyspace, check_resolve_session
@@ -270,7 +270,7 @@ class KnowledgeStore(VectorStore):
         embedding: Embeddings,
         metadatas: Optional[List[dict]] = None,
         **kwargs: Any,
-    ) -> Self:
+    ) -> "KnowledgeStore":
         """Return VectorStore initialized from texts and embeddings."""
 
         ids = kwargs.pop("ids")
