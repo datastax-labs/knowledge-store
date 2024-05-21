@@ -10,7 +10,6 @@ packages = [{include = "knowledge_store"}]
 python = "^3.10"
 langchain-core = "^0.1.50"
 cassio = "^0.1.7"
-instructorembedding = "^1.0.1"
 sentence-transformers = "==2.2.2"
 
 [tool.poetry.group.dev.dependencies]
