@@ -1,5 +1,4 @@
 import secrets
-import uuid
 from typing import Any, Dict, Iterable, List, Optional, Self, Set, Union
 
 from cassandra.cluster import ResponseFuture, Session
