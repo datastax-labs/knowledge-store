@@ -9,7 +9,9 @@ Hybrid Knowledge Store combining vector similarity and edges between chunks.
 3. Replace your LangChain `VectorStore` with the Hybrid `KnowledgeStore`.
 4. Retrieve documets from the `KnowledgeStore`.
 
-## Metadata
+### Create Knowledge Store
+
+### Populate Metadata
 
 The Knowledge Store makes use of the following metadata fields on each `Document`:
 
@@ -23,7 +25,7 @@ The Knowledge Store makes use of the following metadata fields on each `Document
   If one webpage is divided into multiple chunks, each chunk's `Document` would have the same URL.
   One webpage may have multiple URLs if it is available in multiple ways.
 
-### Keywords
+#### Keywords
 
 To link documents with common keywords, assign the `keywords` metadata of each `Document`.
 
@@ -45,7 +47,7 @@ for (doc, kws) in zip(documents, keywords):
 
 Rather than taking all the top keywords, you could also limit to those with less than a certain `_distance` to the document.
 
-### Links
+#### Hyperlinks
 
 To capture hyperlinks, populate the `hrefs` and `urls` metadata fields of each `Document`.
 
@@ -56,6 +58,50 @@ for doc in documents:
     doc.metadata["content_id"] = doc.metadata["source"]
     doc.metadata["hrefs"] = list(link_re.findall(doc.page_content))
     doc.metadata["urls"] = [doc.metadata["source"]]
+```
+
+### Store
+
+```python
+from knowledge_store import KnowledgeStore
+knowledge_store = KnowledgeStore(embeddings)
+knowledge_store.add_documents(documents)
+```
+
+### Retrieve
+
+```python
+from langchain_openai import ChatOpenAI
+
+llm = ChatOpenAI(model="gpt-4o")
+
+# Retrieve and generate using the relevant snippets of the blog.
+from langchain_core.runnables import RunnablePassthrough
+from langchain_core.output_parsers import StrOutputParser
+from langchain_core.prompts import ChatPromptTemplate
+
+# Depth 0 - don't traverse edges. equivalent to vector-only.
+# Depth 1 - vector search plus 1 level of edges
+retriever = knowledge_store.as_retriever(k=4, depth=1)
+
+template = """You are a helpful technical support bot. You should provide complete answers explaining the options the user has available to address their problem. Answer the question based only on the following context:
+{context}
+
+Question: {question}
+"""
+prompt = ChatPromptTemplate.from_template(template)
+
+def format_docs(docs):
+    formatted = "\n\n".join(f"From {doc.metadata['content_id']}: {doc.page_content}" for doc in docs)
+    return formatted
+
+
+rag_chain = (
+    {"context": retriever | format_docs, "question": RunnablePassthrough()}
+    | prompt
+    | llm
+    | StrOutputParser()
+)
 ```
 
 ## Development
