@@ -4,12 +4,9 @@ Hybrid Knowledge Store combining vector similarity and edges between chunks.
 
 ## Usage
 
-1. Create a Hybrid `KnowledgeStore` and configure how edges should be inferred.
-2. Pre-process your documents to populate `metadata` information.
-3. Replace your LangChain `VectorStore` with the Hybrid `KnowledgeStore`.
-4. Retrieve documets from the `KnowledgeStore`.
-
-### Create Knowledge Store
+1. Pre-process your documents to populate `metadata` information.
+1. Create a Hybrid `KnowledgeStore` and add your LangChain `Document`s.
+1. Retrieve documents from the `KnowledgeStore`.
 
 ### Populate Metadata
 
@@ -63,8 +60,15 @@ for doc in documents:
 ### Store
 
 ```python
+import cassio
+from langchain_openai import OpenAIEmbeddings
 from knowledge_store import KnowledgeStore
-knowledge_store = KnowledgeStore(embeddings)
+
+cassio.init(auto=True)
+
+knowledge_store = KnowledgeStore(embeddings=OpenAIEmbeddings())
+
+# Store the documents
 knowledge_store.add_documents(documents)
 ```
 
