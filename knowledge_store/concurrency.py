@@ -67,7 +67,8 @@ class ConcurrentQueries(contextlib.AbstractContextManager):
         _exc_traceback: Optional[TracebackType],
     ) -> bool:
         with self._completion:
-            self._completion.wait()
+            while self._error is None and self._pending > 0:
+                self._completion.wait()
 
         if self._error is not None:
             raise self._error

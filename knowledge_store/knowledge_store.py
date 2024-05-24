@@ -265,12 +265,18 @@ class KnowledgeStore(VectorStore):
         )
         text_embeddings = self._embedding.embed_documents(texts)
 
-        # TODO: Retrieve keywords concurrently?
         keywords_in_texts = {k for md in metadatas for k in md.get(KEYWORDS, {})}
-        keywords_to_ids = {
-            k: set(_results_to_ids(self._session.execute(self._query_ids_by_keyword, (k,))))
-            for k in keywords_in_texts
-        }
+        keywords_to_ids = {}
+        if self._infer_keywords:
+            with ConcurrentQueries(self._session, concurrency=self._concurrency) as cq:
+                def handle_keywords(rows, k):
+                    related = set(_results_to_ids(rows))
+                    keywords_to_ids[k] = related
+
+                for k in keywords_in_texts:
+                    cq.execute(self._query_ids_by_keyword,
+                                parameters = (k,),
+                                callback = lambda rows, k1=k: handle_keywords(rows, k1))
 
         new_hrefs_to_ids = {}
         new_urls_to_ids = {}
